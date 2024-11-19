@@ -6,111 +6,139 @@ import cv2
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from transformers import AutoTokenizer
+from torch.nn.utils.rnn import pad_sequence
 
 # from SGT import model
 
 if __name__ == '__main__':
-
-    # Configuração de dispositivo
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # Parâmetros do modelo
-    BATCH_SIZE = 3
-    EPOCHS = 1
+    BATCH_SIZE = 2
+    EPOCHS = 1000
     embed_size = 512
     hidden_size = 224
-    vocab_size = 50000 
-    
+    vocab_size = 50000
 
+    # Carregar dados e vocabulário
     dataloader = SGT.Dataloader(batch_size=BATCH_SIZE, size=hidden_size, shuffle=True)
-
+    vocab = SGT.Vocab()  # Classe de vocabulário
     train_dataloader = dataloader.get_train_dataloader()
     val_dataloader = dataloader.get_val_dataloader()
-    # test_dataloader = dataloader.get_test_dataloader()
 
-    # print(type(train_dataloader))
+    tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
 
     feature_extractor = SGT.ImageFeatureExtractor().to(device)
     caption_generator = SGT.CaptionGenerator(embed_size, hidden_size, vocab_size).to(device)
+    metrics = SGT.TextMetrics()
+    early_stopping = SGT.EarlyStopping(patience=10, delta=0.001)
 
-    criterion = nn.CrossEntropyLoss(ignore_index=0)  # Ignora o índice 0, se usado para padding
-    optimizer = optim.Adam(caption_generator.parameters(), lr=0.001)
+    criterion = nn.CrossEntropyLoss(ignore_index=0)
+    optimizer = optim.Adam(caption_generator.parameters(), lr=0.01)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5)
 
-    running_loss = []
-    val_running_loss = []
-
-    for epoch in range(0, EPOCHS):
-        feature_extractor.eval()  # Congela o extrator de características
+    for epoch in range(EPOCHS):
+        # Treinamento
         caption_generator.train()
+        feature_extractor.eval()
 
-        running_loss = []
+        train_running_loss = []
+        bleu_train, meteor_train = [], []
+        target = []
+
         train_samples = tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{EPOCHS}")
-
         for images, captions in train_samples:
             images, captions = images.to(device), captions.to(device)
 
-            # Extrair características da imagem sem gradiente
             with torch.no_grad():
-                features = feature_extractor(images) 
-                # print(features.shape)  
+                features = feature_extractor(images)
 
-            # Prepara entradas e alvos
-            inputs = captions[:, :-2]  # Remove a última palavra
-            targets = captions[:, 1:]  # Remove a primeira palavra
-
-            # print('Features', features.shape)
-            # print('Inputs', inputs.shape)
+            inputs = captions[:, :-2]
+            targets = captions[:, 1:]
 
             optimizer.zero_grad()
             outputs = caption_generator(features, inputs)
 
-            # Ajusta a forma de outputs para (batch_size * sequence_length, vocab_size)
-            outputs = outputs.reshape(-1, vocab_size)
+            # Decodifique as saídas do modelo
+            predicted_indices = torch.argmax(outputs, dim=-1)
+            predicted_text = tokenizer.decode(predicted_indices[0].cpu().numpy().tolist(), skip_special_tokens=True)
 
-            # Ajusta a forma de targets para (batch_size * sequence_length)
+            targets_text = tokenizer.decode(targets[0].cpu().numpy(), skip_special_tokens=True)
+
+            # print('Target: ', targets_text)
+            # print('Output: ', predicted_text)
+
+            # tokenized_references = [references.split() for references in targets_text]
+            # tokenized_hypotheses = [hypothesis.split() for hypothesis in predicted_text]
+
+            outputs = outputs.reshape(-1, vocab_size)
             targets = targets.reshape(-1)
 
-            # print('Out', outputs.shape)
-            # print('Tar', targets.shape)
-
-            # Calcular a perda
             loss = criterion(outputs, targets)
             loss.backward()
             optimizer.step()
+            train_running_loss.append(loss.item())
 
-            running_loss.append(loss.item())
-            train_samples.set_description(f"Epoch {epoch + 1}/{EPOCHS}, Loss: {np.mean(running_loss):0.3f}")
-            
-            # image = image.detach().cpu().numpy()[0].transpose(1, 2, 0)
-            
-            # cv2.imshow('Image', image)
+            # bleu, meteor = metrics.evaluate(tokenized_references, tokenized_hypotheses)
 
+            # bleu_train.append(bleu)
+            # meteor_train.append(meteor)
+
+            train_samples.set_description(
+                f"Epoch {epoch+1}/{EPOCHS} | Loss: {np.mean(train_running_loss):0.3f} | BLEU: {np.mean(bleu_train):0.3f} | METEOR: {np.mean(meteor_train):0.3f}"
+            )
+
+        # Validação
         caption_generator.eval()
+        val_running_loss, bleu_val, meteor_val = [], [], []
+
+        target, output = [], []
+
+        val_samples = tqdm(val_dataloader, desc="Validation")
         with torch.no_grad():
-            val_samples = tqdm(val_dataloader, desc="Validation")
             for images, captions in val_samples:
                 images, captions = images.to(device), captions.to(device)
-
-                # Extrair características da imagem
                 features = feature_extractor(images)
 
-                # Prepara entradas e alvos
                 inputs = captions[:, :-2]
                 targets = captions[:, 1:]
 
-                # Geração da legenda
                 outputs = caption_generator(features, inputs)
 
-                # Ajusta as formas
+                # Decodifique as saídas do modelo
+                predicted_indices = torch.argmax(outputs, dim=-1)
+                predicted_text = tokenizer.decode(predicted_indices[0].cpu().numpy().tolist(), skip_special_tokens=True)
+
+                targets_text = tokenizer.decode(targets[0].cpu().numpy(), skip_special_tokens=True)
+
+                target.append(targets_text)
+                output.append(predicted_text)
+
                 outputs = outputs.reshape(-1, vocab_size)
                 targets = targets.reshape(-1)
 
-                # Calcula a perda
                 loss = criterion(outputs, targets)
                 val_running_loss.append(loss.item())
-                val_samples.set_description(f"Validation Loss: {np.mean(val_running_loss):0.3f}")
 
-        print(f"Validation Loss after Epoch {epoch+1}: {np.mean(val_running_loss):0.3f}")
+                # outputs_text = tokenizer.decode(outputs.tolist(), skip_special_tokens=True)
+                # targets_text = tokenizer.decode(targets.tolist(), skip_special_tokens=True)
+                # bleu, meteor = metrics.evaluate(outputs_text, targets_text)
+                # bleu_val.append(bleu)
+                # meteor_val.append(meteor)
+
+                val_samples.set_description(
+                    f"Epoch {epoch+1}/{EPOCHS} | Loss: {np.mean(val_running_loss):0.3f} | BLEU: {np.mean(bleu_val):0.3f} | METEOR: {np.mean(meteor_val):0.3f}"
+                )
+
+        print('Target from last bath val: ', target[(len(val_samples)-1)])
+        print('Output from last bath val: ', output[(len(val_samples)-1)])
+        
+
+        scheduler.step(np.mean(val_running_loss))
+        early_stopping(np.mean(val_running_loss))
+        if early_stopping.early_stop():
+            print("Early Stopping")
+            break
+
 
     # # Plotando a atualização do erro
     # plt.figure(figsize=(10, 5))

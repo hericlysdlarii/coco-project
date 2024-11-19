@@ -13,7 +13,6 @@ from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoTokenizer
 
 
-
 class Data(Dataset):
     def __init__(self, image_dir: str, image_split: str, caption_split: str, transform=None) -> None:
         self._image_dir = image_dir
@@ -59,12 +58,11 @@ class Data(Dataset):
             print(f"No captions found for image ID {image_id}. Returning an empty caption.")
             caption = "<empty>"
         else:
-            # Usa a primeira legenda disponível
+            # Usa a primeira legenda disponível: image_captions[0]
             caption = image_captions[0]
             # print(f"Caption for image {image_id}: {caption}")
-
         
-        tokens = self.tokenizer(str(caption), return_tensors="pt", padding="max_length", truncation=True, max_length=512)
+        tokens = self.tokenizer(str(caption), return_tensors="pt", padding="longest", truncation=True, max_length=512)
         caption_ids = tokens["input_ids"].squeeze()
 
         caption_tensor = torch.tensor(caption_ids, dtype=torch.long)
@@ -115,6 +113,8 @@ class Dataloader:
         ])
     
     def _collate_fn(self, batch):
+        # print('Batch: ', batch)
+        
         images, captions = zip(*batch)  # Separa imagens e legendas
         images = torch.stack(images, 0)  # Empilha as imagens no batch
 
