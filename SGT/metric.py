@@ -1,6 +1,10 @@
 import nltk
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
-from nltk.translate.meteor_score import meteor_score
+# from nltk.translate.meteor_score import meteor_score, single_meteor_score
+from rouge_score import rouge_scorer
+# from pycocoevalcap.cider.cider import Cider
+
+# from pymeteor import pymeteor
 # from pycocoevalcap.spice.spice import Spice
 # import spacy
 
@@ -10,6 +14,7 @@ class TextMetrics:
         Inicializa a classe para cálculo de métricas BLEU e METEOR.
         """
         self.smooth = SmoothingFunction().method1
+        self.scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
 
     def calculate_bleu(self, reference, candidate):
         """
@@ -24,18 +29,10 @@ class TextMetrics:
         bleu = sentence_bleu(reference_b, candidate_b, smoothing_function=self.smooth)
         return bleu
 
-    def calculate_meteor(self, reference, candidate):
-        """
-        Calcula a métrica METEOR entre uma referência e um candidato.
-        :param reference: Texto de referência (string).
-        :param candidate: Texto gerado (string).
-        :return: METEOR Score (float).
-        """
-        reference_m = [reference]  # Lista de listas
-        candidate_m = candidate   # Lista
-
-        meteor = meteor_score(reference_m, candidate_m)
-        return meteor
+    def calculate_rouge(self, reference, candidate):
+        
+        rouge = self.scorer.score(reference, candidate)
+        return rouge
 
     # def calculate_spice(self, reference, candidate):
     #     """
@@ -51,5 +48,5 @@ class TextMetrics:
 
     def evaluate(self, reference, candidate):
         bleu = self.calculate_bleu(reference, candidate),
-        meteor = self.calculate_meteor(reference, candidate),
-        return bleu, meteor
+        rouge = self.calculate_rouge(reference, candidate),
+        return bleu, rouge

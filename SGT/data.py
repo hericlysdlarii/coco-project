@@ -11,6 +11,7 @@ from torch.nn.utils.rnn import pad_sequence
 # from torchvision import transforms
 
 from transformers import AutoTokenizer
+import ast
 
 
 class Data(Dataset):
@@ -20,6 +21,7 @@ class Data(Dataset):
         self._caption_file_train = f'{image_dir}/{caption_split}/train_captions.json'
         self._caption_file_val = f'{image_dir}/{caption_split}/val_captions.json'
         self._transform = transform
+        captions = []
 
         # Inicializa o tokenizador uma vez durante a inicialização
         self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
@@ -56,16 +58,21 @@ class Data(Dataset):
         
         if not image_captions:
             print(f"No captions found for image ID {image_id}. Returning an empty caption.")
-            caption = "<empty>"
+            captions = "<empty>"
         else:
-            # Usa a primeira legenda disponível: image_captions[0]
-            caption = image_captions[0]
-            # print(f"Caption for image {image_id}: {caption}")
+            for cap in image_captions:
+                # Usa a primeira legenda disponível: image_captions[0]
+                captions = cap
+                # lista_targets = ast.literal_eval(caption)
+                
+            # print(f"Caption for image {image_id}: {captions[0]}")
         
-        tokens = self.tokenizer(str(caption), return_tensors="pt", padding="longest", truncation=True, max_length=512)
+        tokens = self.tokenizer(str(captions[0]), return_tensors="pt", padding="longest", truncation=True, max_length=512)
         caption_ids = tokens["input_ids"].squeeze()
 
         caption_tensor = torch.tensor(caption_ids, dtype=torch.long)
+
+        # print(caption_tensor)
 
         if self._transform:
             augmented = self._transform(image=image)
@@ -91,8 +98,8 @@ class Dataloader:
         self._dir = 'coco2017'
         self._size = size
         self._prob_aug = {
-            'train': 0.1,
-            'val': 0.1,
+            'train': 0.3,
+            'val': 0.3,
             'test': 0.,
         }
     
@@ -103,9 +110,11 @@ class Dataloader:
            
             A.Resize(height=self._size, width=self._size),
             A.RandomBrightnessContrast(p=p),
+            A.HueSaturationValue(p=p),
 
             A.HorizontalFlip(p=p),
             A.VerticalFlip(p=p),
+            A.RandomRotate90(p=p),
 
             MyPreProcessing(),
             ToTensorV2(),
