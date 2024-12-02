@@ -1,3 +1,5 @@
 .idea
 .venv
 coco2017
+best_model
+runs

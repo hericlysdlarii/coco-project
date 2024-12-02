@@ -19,6 +19,7 @@ class EarlyStopping:
       self._counter = 0
     
     print(f'Best loss: {(self._best_loss):0.3f} | Current loss:{(loss):0.3f} | strikes: {self._counter}')
+    print(' ')
   
   def early_stop(self):
     return self._early_stop

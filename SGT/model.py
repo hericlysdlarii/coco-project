@@ -22,15 +22,17 @@ class ImageFeatureExtractor(nn.Module):
 
 # Decodificador LSTM para geração de texto
 class CaptionGenerator(nn.Module):
-    def __init__(self, embed_size, hidden_size, vocab_size, num_layers=1):
+    def __init__(self, embed_size, hidden_size, vocab_size, num_layers=1, dropout_prob=0.5):
         super(CaptionGenerator, self).__init__()
         self.embedding = nn.Embedding(vocab_size, embed_size)
-        self.lstm = nn.LSTM(embed_size, hidden_size, num_layers, batch_first=True)  # Dropout na LSTM
+        self.lstm = nn.LSTM(embed_size, hidden_size, num_layers, batch_first=True) 
+        self.dropout = nn.Dropout(p=dropout_prob)
         self.linear = nn.Linear(hidden_size, vocab_size)
 
     def forward(self, features, captions):
         embeddings = self.embedding(captions)
         embeddings = torch.cat((features.unsqueeze(1), embeddings), dim=1)  # Concatena feature com legendas
         hiddens, _ = self.lstm(embeddings)
+        hiddens = self.dropout(hiddens)
         outputs = self.linear(hiddens)
         return outputs

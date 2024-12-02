@@ -1,5 +1,6 @@
 import json
 import os
+import random
 import cv2
 from glob import glob
 import torch
@@ -21,7 +22,6 @@ class Data(Dataset):
         self._caption_file_train = f'{image_dir}/{caption_split}/train_captions.json'
         self._caption_file_val = f'{image_dir}/{caption_split}/val_captions.json'
         self._transform = transform
-        captions = []
 
         # Inicializa o tokenizador uma vez durante a inicialização
         self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
@@ -29,6 +29,9 @@ class Data(Dataset):
         # Carrega as legendas de acordo com a divisão de dados (train ou val)
         try:
             if image_split == 'train':
+                with open(self._caption_file_train, 'r') as f:
+                    self._captions = json.load(f)
+            elif image_split == 'test':
                 with open(self._caption_file_train, 'r') as f:
                     self._captions = json.load(f)
             else:
@@ -58,25 +61,35 @@ class Data(Dataset):
         
         if not image_captions:
             print(f"No captions found for image ID {image_id}. Returning an empty caption.")
-            captions = "<empty>"
-        else:
-            for cap in image_captions:
-                # Usa a primeira legenda disponível: image_captions[0]
-                captions = cap
-                # lista_targets = ast.literal_eval(caption)
-                
-            # print(f"Caption for image {image_id}: {captions[0]}")
+            # captions = "<empty>"
+        # else:
+        #     selected_caption = random.choice(4)
+    
+        captions = []
+        for cap in image_captions:
+            captions = cap
+
+        result = random.randint(0, (len(captions)-1))
+        # print(captions[result])
         
-        tokens = self.tokenizer(str(captions[0]), return_tensors="pt", padding="longest", truncation=True, max_length=512)
+        tokens = self.tokenizer(
+            str(captions[result]), 
+            return_tensors="pt", 
+            padding="longest", 
+            truncation=True, 
+            max_length=512
+        )
+
         caption_ids = tokens["input_ids"].squeeze()
 
         caption_tensor = torch.tensor(caption_ids, dtype=torch.long)
 
-        # print(caption_tensor)
-
         if self._transform:
             augmented = self._transform(image=image)
             image = augmented['image']
+        
+            # # Adiciona o par (imagem, legenda) à saída
+            # outputs.append((image, caption_tensor))
 
         return image, caption_tensor
     
@@ -98,8 +111,8 @@ class Dataloader:
         self._dir = 'coco2017'
         self._size = size
         self._prob_aug = {
-            'train': 0.3,
-            'val': 0.3,
+            'train': 0.,
+            'val': 0.,
             'test': 0.,
         }
     
@@ -145,6 +158,6 @@ class Dataloader:
 
     def get_train_dataloader(self) -> DataLoader: return self.get_dataloader('train', 'captions')
     def get_val_dataloader(self) -> DataLoader: return self.get_dataloader('val', 'captions')
-    # def get_test_dataloader(self) -> DataLoader: return self.get_dataloader('test')
+    def get_test_dataloader(self) -> DataLoader: return self.get_dataloader('test', 'captions')
 
 
