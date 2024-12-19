@@ -5,23 +5,13 @@ from transformers import AutoTokenizer
 from tqdm import tqdm
 import numpy as np
 import matplotlib.pyplot as plt
+import math
+import json
 
 import SGT
 
-# Configurações globais
-CONFIG = {
-    "BATCH_SIZE": 8,
-    "EPOCHS": 1000,
-    "EMBED_SIZE": 512,
-    "HIDDEN_SIZE": 224,
-    "VOCAB_SIZE": 50000,
-    "WEIGHT_DECAY": 0.01,
-    "LEARNING_RATE": 0.01,
-    "PATIENCE": 10,
-    "DELTA": 0.001,
-    "CHECKPOINT_PATH": "best_model/best_model.pth",
-    "DEVICE": torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-}
+# Inicializa o tokenizador da HuggingFace (pode ser substituído)
+tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
 
 # Função para treinar uma época
 def train_epoch(model, dataloader, feature_extractor, tokenizer, criterion, optimizer, metrics, log, device, vocab_size, epoch):
@@ -33,7 +23,7 @@ def train_epoch(model, dataloader, feature_extractor, tokenizer, criterion, opti
 
     for images, captions in tqdm(dataloader, desc="Training"):
         images, captions = images.to(device), captions.to(device)
-        inputs, targets = captions[:, :-1], captions[:, :]
+        inputs, targets = captions[:, :-1], captions[:, 1:]
 
         with torch.no_grad():
             features = feature_extractor(images)
@@ -80,7 +70,7 @@ def validate_epoch(model, dataloader, feature_extractor, tokenizer, criterion, m
     with torch.no_grad():
         for images, captions in tqdm(dataloader, desc="Validation"):
             images, captions = images.to(device), captions.to(device)
-            inputs, targets = captions[:, :-1], captions[:, :]
+            inputs, targets = captions[:, :-1], captions[:, :-1]
 
             features = feature_extractor(images)
             outputs = model(features, inputs)
@@ -171,7 +161,7 @@ def test_model(model, dataloader, feature_extractor, tokenizer, metrics, config)
     with torch.no_grad():
         for images, captions in tqdm(dataloader, desc="Testing"):
             images, captions = images.to(config["DEVICE"]), captions.to(config["DEVICE"])
-            inputs, targets = captions[:, :-1], captions[:, :]
+            inputs, targets = captions[:, :-1], captions[:, 1:]
 
             features = feature_extractor(images)
             outputs = model(features, inputs)
@@ -248,6 +238,124 @@ def test_model(model, dataloader, feature_extractor, tokenizer, metrics, config)
 
 #     return {"outputs": outputs_list}
 
+def calculate_vocab_embed_size_from_json(train_json, val_json, tokenizer):
+    """
+    Calcula vocab_size, emb_size, min_embed_size e max_embed_size com base nas captions em um arquivo JSON.
+    """
+    def load_captions_from_json(json_file):
+        """Carrega as captions de um arquivo JSON."""
+        with open(json_file, "r", encoding="utf-8") as file:
+            data = json.load(file)
+        captions = []
+        for item in data:
+            captions.extend(item.get("captions", []))  # Adiciona todas as captions
+        return captions
+
+    # Carrega as captions de treino e validação
+    train_captions = load_captions_from_json(train_json)
+    val_captions = load_captions_from_json(val_json)
+
+    # Combina todas as captions
+    all_captions = train_captions + val_captions
+
+    # Conjunto de tokens únicos e contagem total de tokens
+    all_tokens = set()
+    total_words = 0
+    # total_captions = len(all_captions)
+    # tokens_init = tokenizer.tokenize(train_captions['captions'][0].lower());
+    min_len = None  # Inicializa min como None
+    max_len = None  # Inicializa max como None
+
+    for caption in all_captions:
+        tokens = tokenizer.tokenize(caption.lower())  # Tokeniza e converte para lowercase
+        all_tokens.update(tokens)
+        total_words += len(tokens)
+
+        # Atribui valores para min e max na primeira iteração
+        if min_len is None or max_len is None:
+            min_len = max_len = len(tokens)
+        else:
+            # Atualiza min e max com base em len(tokens)
+            if len(tokens) > max_len:
+                max_len = len(tokens)
+            if len(tokens) < min_len:
+                min_len = len(tokens)
+
+    # Verifica se a entrada é um tensor e converte para lista de strings
+    if isinstance(all_captions, torch.Tensor):
+        all_captions = all_captions.tolist()
+
+    # Usa um conjunto para calcular palavras únicas
+    unique_words = set()
+    for text in all_captions:
+        words = text.split()
+        unique_words.update(words)
+
+    # Obtém o tamanho total do vocabulário
+    total_words = len(unique_words)
+
+    # Obtém o número de amostras no dataset
+    num_samples = len(all_captions)
+
+    # Define um valor razoável para VOCABULARY_SIZE baseado na análise
+    vocab_size = min(total_words, num_samples)
+
+    # Calcula a proporção entre palavras únicas e número de textos
+    ratio = total_words / len(all_captions)
+
+    # Calcula o embedding_dim com base na proporção
+    embed_size = int((max_len - min_len) * ratio + min_len)
+
+    return {
+        "embed_size": embed_size,
+        "vocab_size": vocab_size,
+        "min_embed_size": min_len,
+        "max_embed_size": max_len,
+    }
+
+# Caminho para o arquivo JSON
+train_json = "coco2017/captions/train_captions.json"
+val_json = "coco2017/captions/train_captions.json"
+
+# Calcula os valores de embed_size
+result = calculate_vocab_embed_size_from_json(train_json, val_json, tokenizer)
+
+# Exibe os resultados
+print(f"Embed Size: {result['embed_size']}")
+print(f"Vocab Size: {result['vocab_size']}")
+print(f"Min Embed Size: {result['min_embed_size']}")
+print(f"Max Embed Size: {result['max_embed_size']}")
+
+def adjust_num_heads(embed_dim, num_heads):
+    """
+    Ajusta num_heads para ser um divisor válido de embed_dim.
+    """
+    if embed_dim % num_heads != 0:
+        # Procura o maior divisor de embed_dim que seja menor ou igual a num_heads
+        valid_heads = [h for h in range(1, embed_dim + 1) if embed_dim % h == 0]
+        new_num_heads = max([h for h in valid_heads if h <= num_heads])
+        print(f"Ajustando num_heads de {num_heads} para {new_num_heads} para ser compatível com embed_dim {embed_dim}.")
+        return new_num_heads
+    return num_heads
+
+# Ajusta num_heads automaticamente
+num_heads = adjust_num_heads(result['embed_size'], 8)
+
+# Configurações globais
+CONFIG = {
+    "BATCH_SIZE": 8,
+    "EPOCHS": 1000,
+    "EMBED_SIZE": result['embed_size'], 
+    "HIDDEN_SIZE": 256, 
+    "VOCAB_SIZE": result['vocab_size'], 
+    "NUM_HEADS": num_heads,
+    "WEIGHT_DECAY": 0.01,
+    "LEARNING_RATE": 0.01,
+    "PATIENCE": 20,
+    "DELTA": 0.001,
+    "CHECKPOINT_PATH": "best_model/best_model.pth",
+    "DEVICE": torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+}
 
 # Função principal
 if __name__ == '__main__':
@@ -258,15 +366,25 @@ if __name__ == '__main__':
         "val": dataloader.get_val_dataloader(),
         "test": dataloader.get_test_dataloader(),
     }
-    tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
-    feature_extractor = SGT.ImageFeatureExtractor().to(CONFIG["DEVICE"])
+    feature_extractor = SGT.ImageFeatureExtractor(CONFIG["EMBED_SIZE"]).to(CONFIG["DEVICE"])
     caption_generator = SGT.CaptionGenerator(
         CONFIG["EMBED_SIZE"], 
         CONFIG["HIDDEN_SIZE"], 
         CONFIG["VOCAB_SIZE"], 
+        CONFIG["NUM_HEADS"],
     ).to(CONFIG["DEVICE"])
     metrics = SGT.TextMetrics()
     logs = SGT.Log(CONFIG["BATCH_SIZE"], tokenizer)
+
+    # Descrição adicional do modelo
+    description = """
+    Este é um modelo Transformer para geração de legendas para imagens. 
+    Ele utiliza a ResNet50 como um extrator de características 
+    e um Transformer como descodificador para gerar as legendas.
+    """
+
+    # Loga a descrição do modelo
+    logs.log_model_description(feature_extractor, caption_generator, description)
 
     # # Treinamento e validação
     history = train_and_validate(caption_generator, feature_extractor, dataloaders, tokenizer, metrics, logs, CONFIG)

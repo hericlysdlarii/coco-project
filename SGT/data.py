@@ -10,9 +10,7 @@ import albumentations as A
 from albumentations.pytorch import ToTensorV2
 from torch.nn.utils.rnn import pad_sequence
 # from torchvision import transforms
-
 from transformers import AutoTokenizer
-import ast
 
 
 class Data(Dataset):
@@ -73,7 +71,7 @@ class Data(Dataset):
         # print(captions[result])
         
         tokens = self.tokenizer(
-            str(captions[result]), 
+            str(captions[result].strip()), 
             return_tensors="pt", 
             padding="longest", 
             truncation=True, 
@@ -111,7 +109,7 @@ class Dataloader:
         self._dir = 'coco2017'
         self._size = size
         self._prob_aug = {
-            'train': 0.,
+            'train': 0.3,
             'val': 0.,
             'test': 0.,
         }
@@ -127,7 +125,7 @@ class Dataloader:
 
             A.HorizontalFlip(p=p),
             A.VerticalFlip(p=p),
-            A.RandomRotate90(p=p),
+            # A.RandomRotate90(p=p),
 
             MyPreProcessing(),
             ToTensorV2(),

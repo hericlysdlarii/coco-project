@@ -1,3 +1,5 @@
+# tensorboard --logdir=runs
+# 
 from torch.utils.tensorboard import SummaryWriter
 from torchvision.utils import make_grid
 import git
@@ -120,5 +122,18 @@ class Log:
   def log_embedding(self, features, class_labels, labels):
     self.writer.add_embedding(features, metadata=class_labels, label_img=labels)
 
-  
+  def log_model_description(self, extrator, decodificador, description: str = ""):
+    """
+    Loga uma descrição textual do modelo no TensorBoard.
+    """
+    # Gera a estrutura do modelo como string
+    extrator = str(extrator)
+    decodificador = str(decodificador)
+    
+    # Cria um texto combinando a descrição e a estrutura do modelo
+    log_text = f"Extrator: \n{extrator}\n\nDecodificador: \n{decodificador}\n\nDescrição: \n{description}"
+    
+    # Adiciona o texto ao TensorBoard
+    self.writer.add_text("Model/Description", log_text)
+    self.writer.flush()
     
