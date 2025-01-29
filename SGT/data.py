@@ -26,10 +26,7 @@ class Data(Dataset):
 
         # Carrega as legendas de acordo com a divisão de dados (train ou val)
         try:
-            if image_split == 'train':
-                with open(self._caption_file_train, 'r') as f:
-                    self._captions = json.load(f)
-            elif image_split == 'test':
+            if image_split == 'train2017':
                 with open(self._caption_file_train, 'r') as f:
                     self._captions = json.load(f)
             else:
@@ -68,7 +65,6 @@ class Data(Dataset):
             captions = cap
 
         result = random.randint(0, (len(captions)-1))
-        # print(captions[result])
         
         tokens = self.tokenizer(
             str(captions[result].strip()), 
@@ -85,11 +81,31 @@ class Data(Dataset):
         if self._transform:
             augmented = self._transform(image=image)
             image = augmented['image']
-        
-            # # Adiciona o par (imagem, legenda) à saída
-            # outputs.append((image, caption_tensor))
 
         return image, caption_tensor
+
+class Data_test(Dataset):
+    def __init__(self, image_dir: str, image_split: str, transform=None) -> None:
+        self._image_dir = image_dir
+        self._image_paths = glob(f'{image_dir}/{image_split}/*.jpg')
+        self._transform = transform
+
+    def __len__(self) -> int:
+        return len(self._image_paths)
+
+    def __getitem__(self, idx: int) -> tuple:
+        image_path = self._image_paths[idx]
+        
+        # Carrega a imagem com tratamento de erros
+        image = cv2.imread(image_path)
+        if image is None:
+            raise FileNotFoundError(f"Image not found at {image_path}")
+
+        if self._transform:
+            augmented = self._transform(image=image)
+            image = augmented['image']
+
+        return image
     
 
 class MyPreProcessing:
@@ -106,12 +122,12 @@ class Dataloader:
         self._batch_size = batch_size
         self._shuffle = shuffle
         self._subset = subset
-        self._dir = 'coco2017'
+        self._dir = '/home/hericlysdlarii/Projeto/coco-project/coco2017'
         self._size = size
         self._prob_aug = {
-            'train': 0.3,
-            'val': 0.,
-            'test': 0.,
+            'train2017': 0.5,
+            'val2017': 0.,
+            'test2017': 0.,
         }
     
     def _transform(self, image_split: str) -> A.Compose:
@@ -144,18 +160,29 @@ class Dataloader:
         return images, captions
 
     def get_dataloader(self, image_split: str, caption_split: str=None) -> DataLoader:
-        dataset = Data(self._dir, image_split, caption_split, self._transform(image_split))
+        if image_split == 'test2017':
+            dataset = Data_test(self._dir, image_split, self._transform(image_split))
 
-        if self._subset:
-            dataset = Subset(dataset, range(self._subset))
+            if self._subset:
+                dataset = Subset(dataset, range(self._subset))
 
-        dataloader = DataLoader(dataset, batch_size=self._batch_size, shuffle=self._shuffle, collate_fn=self._collate_fn) #
+            dataloader = DataLoader(dataset, batch_size=self._batch_size, shuffle=self._shuffle)
+
+            return dataloader
         
-        return dataloader
+        else:
+            dataset = Data(self._dir, image_split, caption_split, self._transform(image_split))
+
+            if self._subset:
+                dataset = Subset(dataset, range(self._subset))
+
+            dataloader = DataLoader(dataset, batch_size=self._batch_size, shuffle=self._shuffle, collate_fn=self._collate_fn) #
+            
+            return dataloader
 
 
-    def get_train_dataloader(self) -> DataLoader: return self.get_dataloader('train', 'captions')
-    def get_val_dataloader(self) -> DataLoader: return self.get_dataloader('val', 'captions')
-    def get_test_dataloader(self) -> DataLoader: return self.get_dataloader('test', 'captions')
+    def get_train_dataloader(self) -> DataLoader: return self.get_dataloader('train2017', 'captions')
+    def get_val_dataloader(self) -> DataLoader: return self.get_dataloader('val2017', 'captions')
+    def get_test_dataloader(self) -> DataLoader: return self.get_dataloader('test2017')
 
 

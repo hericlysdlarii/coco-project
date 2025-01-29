@@ -1,8 +1,24 @@
-import torch.nn as nn
-import torchvision.models as models
-from torchvision.models import ResNet50_Weights
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
+from torchvision import models
+from torchvision.models import ResNet50_Weights
+
+
+# Codificação Posicional
+class PositionalEncoding(nn.Module):
+    def __init__(self, embed_dim, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        self.encoding = torch.zeros(max_len, embed_dim)
+        position = torch.arange(0, max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, embed_dim, 2) * -(torch.log(torch.tensor(10000.0)) / embed_dim))
+        self.encoding[:, 0::2] = torch.sin(position * div_term)
+        self.encoding[:, 1::2] = torch.cos(position * div_term)
+        self.encoding = self.encoding.unsqueeze(0)
+
+    def forward(self, x):
+        seq_len = x.size(1)
+        return x + self.encoding[:, :seq_len, :].to(x.device)
 
 
 # Extrator de características da imagem usando ResNet
@@ -20,111 +36,97 @@ class ImageFeatureExtractor(nn.Module):
         return features
 
 
-# Transformer Encoder Layer em PyTorch
-class TransformerEncoderLayer(nn.Module):
-    def __init__(self, embed_dim, num_heads):
-        super(TransformerEncoderLayer, self).__init__()
-        self.layer_norm_1 = nn.LayerNorm(embed_dim)
-        self.layer_norm_2 = nn.LayerNorm(embed_dim)
-        self.attention = nn.MultiheadAttention(embed_dim, num_heads, dropout=0.1)
-        self.dense = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim),
-            nn.ReLU()
-        )
+# Transformer Encoder usando camadas do PyTorch
+class TransformerEncoder(nn.Module):
+    def __init__(self, embed_dim, num_heads, num_layers):
+        super(TransformerEncoder, self).__init__()
+        encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads, dim_feedforward=2048, dropout=0.1)
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.positional_encoding = PositionalEncoding(embed_dim)
 
     def forward(self, x):
-        # Normaliza e passa pela camada densa
-        x_norm = self.layer_norm_1(x)
-        x_dense = self.dense(x_norm)
-
-        # Atenção multi-cabeças
-        attn_output, _ = self.attention(x_dense, x_dense, x_dense)
-        x = x + attn_output  # Residual Connection
-        x = self.layer_norm_2(x)
+        x = self.positional_encoding(x.unsqueeze(1))  # Adiciona dimensão seq_len
+        x = self.encoder(x)
         return x
 
 
-# Transformer Decoder Layer em PyTorch
-class TransformerDecoderLayer(nn.Module):
-    def __init__(self, embed_dim, units, num_heads, vocab_size):
-        super(TransformerDecoderLayer, self).__init__()
+# Transformer Decoder usando camadas do PyTorch
+class TransformerDecoder(nn.Module):
+    def __init__(self, embed_dim, num_heads, num_layers, vocab_size):
+        super(TransformerDecoder, self).__init__()
+        decoder_layer = nn.TransformerDecoderLayer(d_model=embed_dim, nhead=num_heads, dim_feedforward=2048, dropout=0.1)
+        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
         self.embedding = nn.Embedding(vocab_size, embed_dim)
+        self.positional_encoding = PositionalEncoding(embed_dim)
+        self.fc_out = nn.Linear(embed_dim, vocab_size)
 
-        self.attention_1 = nn.MultiheadAttention(embed_dim, num_heads, dropout=0.1)
-        self.attention_2 = nn.MultiheadAttention(embed_dim, num_heads, dropout=0.1)
+    def forward(self, input_ids, encoder_output):
+        embeddings = self.embedding(input_ids)  # [batch_size, seq_len, embed_dim]
+        embeddings = self.positional_encoding(embeddings)  # Adiciona codificação posicional
+        embeddings = embeddings.permute(1, 0, 2)  # Seq-first para TransformerDecoder
+        encoder_output = encoder_output.permute(1, 0, 2)  # Seq-first para TransformerDecoder
 
-        self.layer_norm_1 = nn.LayerNorm(embed_dim)
-        self.layer_norm_2 = nn.LayerNorm(embed_dim)
-        self.layer_norm_3 = nn.LayerNorm(embed_dim)
-
-        self.ffn = nn.Sequential(
-            nn.Linear(embed_dim, units),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(units, embed_dim),
-            nn.Dropout(0.5)
-        )
-        self.out = nn.Linear(embed_dim, vocab_size)
-
-    def forward(self, input_ids, encoder_output, mask=None):
-        # Embedding e máscara causal
-        embeddings = self.embedding(input_ids).permute(1, 0, 2)  # Seq first para MultiheadAttention
-        causal_mask = self.generate_causal_mask(embeddings.size(0), embeddings.device)
-
-        # Primeira camada de atenção (self-attention)
-        attn_output_1, _ = self.attention_1(embeddings, embeddings, embeddings, attn_mask=causal_mask)
-        out_1 = self.layer_norm_1(embeddings + attn_output_1)
-
-        # Segunda camada de atenção (encoder-decoder attention)
-        attn_output_2, _ = self.attention_2(out_1, encoder_output, encoder_output)
-        out_2 = self.layer_norm_2(out_1 + attn_output_2)
-
-        # Feed Forward Network
-        ffn_output = self.ffn(out_2)
-        out = self.layer_norm_3(out_2 + ffn_output)
-
-        # Predições finais
-        preds = self.out(out.permute(1, 0, 2))  # Volta para batch first
-        return preds
-
-    def generate_causal_mask(self, seq_len, device):
-        mask = torch.triu(torch.ones(seq_len, seq_len, device=device), diagonal=1)
-        return mask.masked_fill(mask == 1, float('-inf'))
+        decoder_output = self.decoder(embeddings, encoder_output)  # [seq_len, batch_size, embed_dim]
+        logits = self.fc_out(decoder_output.permute(1, 0, 2))  # [batch_size, seq_len, vocab_size]
+        return logits
 
 
-# Atualiza o decodificador existente no CaptionGenerator
+# Label Smoothing Loss
+class LabelSmoothingLoss(nn.Module):
+    def __init__(self, smoothing=0.1):
+        super(LabelSmoothingLoss, self).__init__()
+        self.smoothing = smoothing
+
+    def forward(self, preds, target):
+        n_classes = preds.size(-1)
+        log_preds = F.log_softmax(preds, dim=-1)
+        one_hot = F.one_hot(target, n_classes).float()
+        smoothed_labels = one_hot * (1 - self.smoothing) + self.smoothing / n_classes
+        return torch.mean(-smoothed_labels * log_preds)
+
+
+# Atualiza o modelo de geração de legendas
 class CaptionGenerator(nn.Module):
-    def __init__(self, embed_size, hidden_size, vocab_size, num_heads):
+    def __init__(self, embed_size, hidden_size, vocab_size, num_heads, num_encoder_layers, num_decoder_layers, max_len=20):
         super(CaptionGenerator, self).__init__()
-        self.encoder_layer = TransformerEncoderLayer(embed_size, num_heads)
-        self.decoder_layer = TransformerDecoderLayer(embed_size, hidden_size, num_heads, vocab_size)
+        self.encoder = TransformerEncoder(embed_size, num_heads, num_encoder_layers)
+        self.decoder = TransformerDecoder(embed_size, num_heads, num_decoder_layers, vocab_size)
+        self.loss_fn = LabelSmoothingLoss()
+        self.max_len = max_len  # Comprimento máximo da legenda
+        self.vocab_size = vocab_size
+        self.start_token_id = 1  # ID do token de início
+        self.end_token_id = 2  # ID do token de fim
 
-    def forward(self, features, captions):
-        # Encoder
-        encoder_output = self.encoder_layer(features.unsqueeze(0))  # Adiciona dimensão seq_len
+    def forward(self, features, captions=None, targets=None):
+        # Etapa de treinamento
+        if captions is not None:
+            encoder_output = self.encoder(features)  # [batch_size, seq_len, embed_size]
+            outputs = self.decoder(captions, encoder_output)  # [batch_size, seq_len, vocab_size]
 
-        # Decoder
-        outputs = self.decoder_layer(captions, encoder_output)
-        return outputs
+            if targets is not None:
+                loss = self.loss_fn(outputs.permute(0, 2, 1), targets)  # Ajusta dimensões para CrossEntropy
+                return outputs, loss
+            return outputs
 
+        # Etapa de inferência
+        else:
+            batch_size = features.size(0)
+            encoder_output = self.encoder(features)  # [batch_size, seq_len, embed_size]
 
-# # Decodificador LSTM para geração de texto
-# class CaptionGenerator(nn.Module):
-#     def __init__(self, embed_size, hidden_size, vocab_size, num_layers=1, dropout_prob=0.5):
-#         super(CaptionGenerator, self).__init__()
-#         self.embedding = nn.Embedding(vocab_size, embed_size)
-#         self.lstm = nn.LSTM(embed_size, hidden_size, num_layers, batch_first=True) 
-#         self.dropout = nn.Dropout(p=dropout_prob)
-#         self.linear = nn.Linear(hidden_size, vocab_size)
+            # Inicializa as legendas com o token de início
+            generated_captions = torch.full((batch_size, 1), self.start_token_id, dtype=torch.long).to(features.device)
 
-#     def forward(self, features, captions):
-#         features = features.view(features.size(0), -1)  # [8, 2048]
-#         features = features.unsqueeze(1) # Expande para [8, 1, 2048]
+            for _ in range(self.max_len):
+                # Decodifica a sequência gerada até o momento
+                decoder_output = self.decoder(generated_captions, encoder_output)  # [batch_size, seq_len, vocab_size]
+                next_token = decoder_output[:, -1, :].argmax(dim=-1, keepdim=True)  # Seleciona o token com maior probabilidade
 
-#         embeddings = self.embedding(captions)
+                # Concatena o token previsto à sequência gerada
+                generated_captions = torch.cat((generated_captions, next_token), dim=1)
 
-#         embeddings = torch.cat((features, embeddings), dim=1)  # Concatena feature com legendas
-#         hiddens, _ = self.lstm(embeddings)
-#         hiddens = self.dropout(hiddens)
-#         outputs = self.linear(hiddens)
-#         return outputs
+                # Para se encontrar o token de fim em todas as sequências
+                if (next_token == self.end_token_id).all():
+                    break
+
+            return generated_captions
+

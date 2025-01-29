@@ -9,7 +9,7 @@ import torch
 from PIL import Image, ImageDraw, ImageFont
 
 class Stamp:
-  def __init__(self, repo_path: str = "C:/Users/hericlys.borges/Documents/Mestrado/Projeto/coco-project") -> None:
+  def __init__(self, repo_path: str = "/home/hericlysdlarii/Projeto/coco-project/") -> None:
     self.__repo = git.Repo(repo_path)
     self._commit = self.__repo.head.commit
     self._time = datetime.datetime.now().strftime("%d%m%Y_%H%M")
@@ -36,19 +36,20 @@ class Log:
     self.model_saved = False
     self.tokenizer = tokenizer
 
-  def add_text_to_image(self, image_tensor, captions, outputs, font_size=20):
-
+  def add_text_to_image(self, image_tensor, outputs=None, captions=None, font_size=20):
     # Garantir que as entradas são válidas
     assert image_tensor.dim() == 4, "O batch de imagens deve ter 4 dimensões [B, C, H, W]."
-    assert len(captions) == image_tensor.size(0), "O número de legendas deve ser igual ao número de imagens no batch."
+    if captions != None:
+      assert len(captions) == image_tensor.size(0), "O número de legendas deve ser igual ao número de imagens no batch."
     assert len(outputs) == image_tensor.size(0), "O número de predições deve ser igual ao número de imagens no batch."
 
     processed_images = []
 
-    for i in range(image_tensor.size(0)):
-      captions_text = self.tokenizer.decode(captions[i].cpu().numpy(), skip_special_tokens=True)
+    for i in range(image_tensor.size(0)):        
+      if captions != None:
+        captions_text = self.tokenizer.decode(captions[i].cpu().numpy(), skip_special_tokens=True)
       predicted_indices = torch.argmax(outputs[i], dim=-1)
-      output_text = self.tokenizer.decode(predicted_indices[i].cpu().numpy().tolist(), skip_special_tokens=True)
+      output_text = self.tokenizer.decode(predicted_indices.cpu().numpy().tolist(), skip_special_tokens=True)
 
       # image_tensor = image_tensor[i]  # Seleciona a i-ésima imagem do batch
     
@@ -70,8 +71,11 @@ class Log:
       bottom_position = image_pil.height - font_size - text_margin
 
       # Adiciona texto
-      draw.text((text_margin, top_position), f"Caption: {captions_text}", font=font, fill="white")
-      draw.text((text_margin, bottom_position), f"Prediction: {output_text}", font=font, fill="white")
+      if captions != None:
+        draw.text((text_margin, top_position), f"Caption: {captions_text}", font=font, fill="white")
+        draw.text((text_margin, bottom_position), f"Prediction: {output_text}", font=font, fill="white")
+      else:
+        draw.text((text_margin, top_position), f"Prediction: {output_text}", font=font, fill="white")
 
       # Converte de volta para tensor e adiciona à lista
       processed_images.append(torch.from_numpy(np.array(image_pil)).permute(2, 0, 1))
@@ -92,23 +96,29 @@ class Log:
   def log_scalar_hiper(self, scalar, epoch, scalar_name='LR'):
     self._log_scalar(scalar=scalar, epoch=epoch, path=f'HIPER/{scalar_name}', mean=False)
   
-  def log_image(self, images, epoch, path: str = None):
+  def log_image(self, images, epoch=None, path: str = None):
     img_grid = make_grid(images, nrow=self.batch_size)
-    self.writer.add_image(path, img_grid, global_step=epoch)
+    if epoch != None:
+      self.writer.add_image(path, img_grid, global_step=epoch)
+    else:
+      self.writer.add_image(path, img_grid)
   
-  def log_tensors(self, image, captions, outputs, epoch:int, split:str):
+  def log_tensors(self, image, outputs, captions=None, epoch:int=None, split:str=None):
     image = (image.detach().cpu() * 255).to(torch.uint8)
 
     # for i, (image, captions, output) in enumerate(zip(image, captions, output)):
-    image_with_captions = self.add_text_to_image(image, captions, outputs)
+    image_with_captions = self.add_text_to_image(image, outputs, captions,)
     #   # img_cap_out = torch.concat([image, captions_text, output_text], dim=0)
     self.log_image(image_with_captions, path=f'tensors/{split}', epoch=epoch)
 
-  def log_tensors_train(self, image, captions, output, epoch: int):
-    self.log_tensors(image, captions, output, epoch, 'train')
+  def log_tensors_train(self, image, output, captions, epoch: int):
+    self.log_tensors(image, output, captions, epoch, 'train')
 
-  def log_tensors_val(self, image, captions, output, epoch: int):
-    self.log_tensors(image, captions, output, epoch, 'val')
+  def log_tensors_val(self, image, output, captions, epoch: int):
+    self.log_tensors(image, output, captions, epoch, 'val')
+
+  def log_tensors_test(self, image, output):
+    self.log_tensors(image, output)
 
   def close(self):
     self.writer.close()

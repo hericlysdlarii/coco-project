@@ -52,7 +52,7 @@ def train_epoch(model, dataloader, feature_extractor, tokenizer, criterion, opti
     log.log_scalar_train((np.mean(bleu_scores)), epoch=epoch, scalar_name='BLEU')
     log.log_scalar_train((np.mean(rouge_scores)), epoch=epoch, scalar_name='ROUGE')
     log.log_scalar_train((np.mean(running_loss)), epoch=epoch, scalar_name='LOSS')
-    log.log_tensors_train(images, targets, outputs, epoch=epoch)
+    # log.log_tensors_train(images, outputs, targets, epoch=epoch)
 
     return {
         "loss": np.mean(running_loss),
@@ -93,7 +93,7 @@ def validate_epoch(model, dataloader, feature_extractor, tokenizer, criterion, m
         log.log_scalar_val((np.mean(bleu_scores)), epoch=epoch, scalar_name='BLEU')
         log.log_scalar_val((np.mean(rouge_scores)), epoch=epoch, scalar_name='ROUGE')
         log.log_scalar_val((np.mean(running_loss)), epoch=epoch, scalar_name='LOSS')
-        log.log_tensors_val(images, targets, outputs, epoch=epoch)
+        log.log_tensors_val(images, outputs, targets, epoch=epoch)
 
     return {
         "loss": np.mean(running_loss),
@@ -104,7 +104,7 @@ def validate_epoch(model, dataloader, feature_extractor, tokenizer, criterion, m
 # Função para treinar e validar o modelo
 def train_and_validate(model, feature_extractor, dataloaders, tokenizer, metrics, log, config):
     optimizer = optim.Adam(model.parameters(), lr=config["LEARNING_RATE"], weight_decay=config["WEIGHT_DECAY"])
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3, cooldown=20)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.05, patience=5, cooldown=20)
     criterion = nn.CrossEntropyLoss(ignore_index=0)
     early_stopping = SGT.EarlyStopping(patience=config["PATIENCE"], delta=config["DELTA"])
 
@@ -148,95 +148,38 @@ def train_and_validate(model, feature_extractor, dataloaders, tokenizer, metrics
     return history
 
 #Função para testar o modelo
-def test_model(model, dataloader, feature_extractor, tokenizer, metrics, config):
+def test_model(model, dataloader, feature_extractor, tokenizer, log, config):
     model.eval()
     feature_extractor.eval()
-    test_running_loss = []
-    bleu_scores = []
-    rouge_scores = []
-    images_list, captions_list, outputs_list = [], [], []
-
-    criterion = nn.CrossEntropyLoss(ignore_index=0)
+    
+    images_list, outputs_list = [], []
 
     with torch.no_grad():
-        for images, captions in tqdm(dataloader, desc="Testing"):
-            images, captions = images.to(config["DEVICE"]), captions.to(config["DEVICE"])
-            inputs, targets = captions[:, :-1], captions[:, 1:]
+        for images in tqdm(dataloader, desc="Testing"):
+            images = images.to(config["DEVICE"])
 
             features = feature_extractor(images)
-            outputs = model(features, inputs)
+            outputs = model(features)
 
             # Decodificar saída do modelo
             predicted_indices = torch.argmax(outputs, dim=-1)
             predicted_text = tokenizer.decode(predicted_indices[0].cpu().numpy().tolist(), skip_special_tokens=True)
-            targets_text = tokenizer.decode(targets[0].cpu().numpy().tolist(), skip_special_tokens=True)
-
-            outputs = outputs.reshape(-1, config["VOCAB_SIZE"])
-            targets = targets.reshape(-1)
-
-            loss = criterion(outputs, targets)
-            test_running_loss.append(loss.item())
 
             images_list.append(images[0].cpu().numpy().transpose(1, 2, 0))
-            captions_list.append(targets_text)
             outputs_list.append(predicted_text)
+        
+        log.log_tensors_test(images, predicted_text)
 
-            bleu, rouge_tuple = metrics.evaluate(targets_text, predicted_text)
-            rouge = rouge_tuple[0]
-            bleu_scores.append(bleu)
-            rouge_scores.append(rouge['rougeL'].fmeasure)
 
-    # Resultados médios
-    avg_loss = np.mean(test_running_loss)
-    avg_bleu = np.mean(bleu_scores)
-    avg_rouge = np.mean(rouge_scores)
-
-    print(f"Test Loss: {avg_loss:.3f}, BLEU: {avg_bleu:.3f}, ROUGE-L: {avg_rouge:.3f}")
-
-    # Visualizar resultados de uma amostra
+    # Visualizar resultados de última amostra
     plt.figure()
     plt.imshow(images_list[-1])
-    plt.title(f"Target: {captions_list[-1]}\n\nPredicted: {outputs_list[-1]}")
+    plt.title(f"Predicted: {outputs_list[-1]}")
     plt.axis("off")
     plt.show()
 
-    return {"loss": avg_loss, "bleu": avg_bleu, "rougeL": avg_rouge}
+    return {"Images": images_list, "Predict": outputs_list}
 
-# #Função para testar o modelo
-# def test_model_without_targets(model, dataloader, feature_extractor, tokenizer, config):
-#     model.eval()
-#     feature_extractor.eval()
-
-#     images_list, outputs_list = [], []
-
-#     with torch.no_grad():
-#         for images in tqdm(dataloader, desc="Testing"):
-#             images = images.to(config["DEVICE"])
-
-#             # Extração de características
-#             features = feature_extractor(images)
-
-#             # Geração de legendas
-#             outputs = model(features)
-
-#             # Decodificar saída do modelo
-#             predicted_indices = torch.argmax(outputs, dim=-1)
-#             predicted_text = tokenizer.decode(predicted_indices[0].cpu().numpy().tolist(), skip_special_tokens=True)
-
-#             images_list.append(images[0].cpu().numpy().transpose(1, 2, 0))
-#             outputs_list.append(predicted_text)
-
-#     # Exibir a última imagem e a legenda gerada
-#     if images_list and outputs_list:
-#         plt.figure()
-#         plt.imshow(images_list[-1])
-#         plt.title(f"Predicted: {outputs_list[-1]}")
-#         plt.axis("off")
-#         plt.show()
-#     else:
-#         print("Nenhuma imagem processada no dataloader de teste.")
-
-#     return {"outputs": outputs_list}
 
 def calculate_vocab_embed_size_from_json(train_json, val_json, tokenizer):
     """
@@ -314,8 +257,9 @@ def calculate_vocab_embed_size_from_json(train_json, val_json, tokenizer):
     }
 
 # Caminho para o arquivo JSON
-train_json = "coco2017/captions/train_captions.json"
-val_json = "coco2017/captions/train_captions.json"
+train_json = "/home/hericlysdlarii/Projeto/coco-project/coco2017/captions/train_captions.json"
+
+val_json = "/home/hericlysdlarii/Projeto/coco-project/coco2017/captions/val_captions.json"
 
 # Calcula os valores de embed_size
 result = calculate_vocab_embed_size_from_json(train_json, val_json, tokenizer)
@@ -345,11 +289,11 @@ num_heads = adjust_num_heads(result['embed_size'], 8)
 CONFIG = {
     "BATCH_SIZE": 8,
     "EPOCHS": 1000,
-    "EMBED_SIZE": result['embed_size'], 
+    "EMBED_SIZE": (result['embed_size']-1), 
     "HIDDEN_SIZE": 256, 
     "VOCAB_SIZE": result['vocab_size'], 
     "NUM_HEADS": num_heads,
-    "WEIGHT_DECAY": 0.01,
+    "WEIGHT_DECAY": 0.001,
     "LEARNING_RATE": 0.01,
     "PATIENCE": 20,
     "DELTA": 0.001,
@@ -372,6 +316,8 @@ if __name__ == '__main__':
         CONFIG["HIDDEN_SIZE"], 
         CONFIG["VOCAB_SIZE"], 
         CONFIG["NUM_HEADS"],
+        6,
+        6,
     ).to(CONFIG["DEVICE"])
     metrics = SGT.TextMetrics()
     logs = SGT.Log(CONFIG["BATCH_SIZE"], tokenizer)
@@ -405,7 +351,7 @@ if __name__ == '__main__':
     print("Iniciando a fase de testes...")
     caption_generator.load_state_dict(torch.load(CONFIG["CHECKPOINT_PATH"]))
 
-    test_metrics = test_model(caption_generator, dataloaders["test"], feature_extractor, tokenizer, metrics, CONFIG)
+    test_metrics = test_model(caption_generator, dataloaders["test"], feature_extractor, tokenizer, logs, CONFIG)
 
     #Resultados do teste
-    print(f"Resultados do Teste - Loss: {test_metrics['loss']:.3f}, BLEU: {test_metrics['bleu']:.3f}, ROUGE-L: {test_metrics['rougeL']:.3f}")
+    # print(f"Resultados do Teste - Loss: {test_metrics['loss']:.3f}, BLEU: {test_metrics['bleu']:.3f}, ROUGE-L: {test_metrics['rougeL']:.3f}")
